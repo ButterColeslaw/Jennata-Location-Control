@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pandas
+pymupdf
+lxml
+html5lib
+openpyxl
+xlrd
+python-multipart

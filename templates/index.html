@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบประมวลผลใบคุมโลเคชัน</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 20px; }
+        .container { max-width: 500px; margin: 40px auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h2 { text-align: center; color: #333; margin-bottom: 20px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
+        input[type="text"], input[type="number"], input[type="file"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        button:hover { background-color: #0056b3; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>ระบบประมวลผลใบคุมโลเคชัน</h2>
+        <form action="/process" method="post" enctype="multipart/form-data">
+            <div class="form-group">
+                <label>1. ไฟล์ Excel สรุปนับสินค้า (.xls / .xlsx):</label>
+                <input type="file" name="excel_file" accept=".xls,.xlsx" required>
+            </div>
+            <div class="form-group">
+                <label>2. ไฟล์ PDF ใบคุมโลเคชันต้นฉบับ:</label>
+                <input type="file" name="pdf_file" accept=".pdf" required>
+            </div>
+            <div class="form-group">
+                <label>3. Prefix โลเคชัน (เช่น 26-076-0):</label>
+                <input type="text" name="prefix" value="26-076-0" placeholder="26-076-0" required>
+            </div>
+            <div class="form-group">
+                <label>4. ยอด Adjust (ถ้าไม่มีให้ใส่ 0):</label>
+                <input type="number" name="adjust_qty" value="0" required>
+            </div>
+            <button type="submit">ประมวลผลและดาวน์โหลด PDF</button>
+        </form>
+    </div>
+</body>
+</html>
