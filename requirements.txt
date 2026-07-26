@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 pandas
-pymupdf
+PyMuPDF
 lxml
 html5lib
 openpyxl

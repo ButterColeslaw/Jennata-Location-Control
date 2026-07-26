@@ -142,6 +142,14 @@ def parse_prefix_and_padding(example_loc_str):
     return cleaned, 0
 
 def read_excel_flexibly(file_bytes, filename):
+    filename_lower = filename.lower()
+    
+    if filename_lower.endswith('.xlsx'):
+        try:
+            return pd.read_excel(io.BytesIO(file_bytes), engine='openpyxl')
+        except Exception:
+            pass
+
     try:
         tables = pd.read_html(io.BytesIO(file_bytes))
         if tables:
@@ -182,7 +190,6 @@ async def process_files(
     try:
         prefix_base, digit_len = parse_prefix_and_padding(example_loc)
 
-        # 1. อ่านไฟล์ Excel
         excel_bytes = await excel_file.read()
         df_raw = read_excel_flexibly(excel_bytes, excel_file.filename)
 
@@ -218,7 +225,6 @@ async def process_files(
         qty_1402 = int(location_summary.get('1402', 0))
         total_sale_counting = qty_1401 + qty_1402
 
-        # 2. จัดการไฟล์ PDF
         doc = fitz.open(pdf_path)
         front_locations_total = 0
         back_locations_total = 0
@@ -227,9 +233,9 @@ async def process_files(
         FONT_NAME = "hebo"
         FONT_SIZE = 11.0
         NAVY_BLUE = (0.0, 0.15, 0.55)
+        BLACK = (0.0, 0.0, 0.0)
         OBLIQUE_MATRIX = fitz.Matrix(1, 0, 0.2, 1, 0, 0)
 
-        # ดึงยอด Onhand
         for page in doc:
             text = page.get_text()
             match = re.search(r'Onhand\s*:\s*(\d+)', text)
@@ -237,28 +243,32 @@ async def process_files(
                 onhand_amount = int(match.group(1))
                 break
 
-        found_front_page = False
+        processed_full_locs = set()
+        found_front_section_end = False
 
-        # 3. วนลูปประมวลผล PDF ทีละหน้า
+        # 1. วนลูปประมวลผลสแกนและเติม Qty ในทุกหน้าของใบคุม
         for page_idx in range(len(doc) - 1):
             page = doc[page_idx]
             words = page.get_text("words")
             page_qty_sum = 0
             
-            qty_words = [w for w in words if "Qty" in w[4]]
+            qty_words = [w for w in words if "Qty" in w[4] and "Total" not in w[4]]
 
             for q_w in qty_words:
                 q_x0, q_y0, q_x1, q_y1 = q_w[0], q_w[1], q_w[2], q_w[3]
                 
+                if q_y1 > 765:
+                    continue
+
                 short_loc = None
                 candidates = []
+
                 for w in words:
-                    w_x0, w_y0, w_x1, w_text = w[0], w[1], w[2], w[4].strip()
-                    if abs(w_y0 - q_y0) < 5 and w_x1 < q_x0:
-                        if w_text.isdigit() and (q_x0 - w_x1) < 120:
-                            if w_text not in ['1401', '1402']:
-                                candidates.append((w_x1, w_text))
-                
+                    w_x0, w_y0, w_x1, w_y1, w_text = w[0], w[1], w[2], w[3], w[4].strip()
+                    if (abs(w_y0 - q_y0) < 5 or (q_y0 - w_y1 > 0 and q_y0 - w_y1 < 40)) and (q_x0 - w_x1) > 0 and (q_x0 - w_x1) < 90:
+                        if w_text.isdigit() and len(w_text) <= 5 and w_text not in ['1401', '1402']:
+                            candidates.append((w_x1, w_text))
+
                 if candidates:
                     candidates.sort(key=lambda x: x[0], reverse=True)
                     short_loc = candidates[0][1]
@@ -270,6 +280,8 @@ async def process_files(
                         formatted_num = short_loc
 
                     full_loc = f"{prefix_base}{formatted_num}"
+                    processed_full_locs.add(full_loc)
+                    
                     count_qty = int(location_summary.get(full_loc, 0))
                     page_qty_sum += count_qty
 
@@ -284,16 +296,14 @@ async def process_files(
                         morph=(fitz.Point(q_x1 + 12, q_y1 - 3.5), OBLIQUE_MATRIX)
                     )
 
-            if not found_front_page:
+            if not found_front_section_end:
                 front_locations_total += page_qty_sum
             else:
                 back_locations_total += page_qty_sum
 
-            # ค้นหาข้อความคำว่า Total (Front) โดยไม่สนการเว้นวรรค หรือเครื่องหมาย Colon
             matches_front = page.search_for("Total (Front)")
             if matches_front:
                 m_rect = matches_front[0]
-                # วางตัวเลขเยื้องจากคำว่า Total (Front) ไปทางขวา 110pt
                 page.insert_text(
                     (m_rect.x0 + 110, m_rect.y1 - 3.5), 
                     format_qty_str(front_locations_total), 
@@ -302,24 +312,41 @@ async def process_files(
                     color=NAVY_BLUE,
                     morph=(fitz.Point(m_rect.x0 + 110, m_rect.y1 - 3.5), OBLIQUE_MATRIX)
                 )
-                found_front_page = True
+                found_front_section_end = True
 
-            # ค้นหาข้อความคำว่า Total (Back) โดยไม่สนการเว้นวรรค หรือเครื่องหมาย Colon
-            matches_back = page.search_for("Total (Back)")
+        # 2. ค้นหาโลเคชันตกสำรวจ
+        unlisted_locs = []
+        unlisted_total_qty = 0
+        for loc_key, count_val in location_summary.items():
+            if loc_key not in ['1401', '1402'] and loc_key not in processed_full_locs and count_val > 0:
+                unlisted_locs.append((loc_key, int(count_val)))
+                unlisted_total_qty += int(count_val)
+
+        # 3. จัดรูปแบบการแสดงผล Total (Back) Qty และสแกนเติมในหน้าที่มี Total (Back)
+        orig_back_total = back_locations_total
+        final_back_total = orig_back_total + unlisted_total_qty
+
+        if unlisted_total_qty > 0:
+            back_display_text = f"{orig_back_total} + {unlisted_total_qty} = {final_back_total}"
+        else:
+            back_display_text = format_qty_str(orig_back_total)
+
+        for page_idx in range(len(doc) - 1):
+            page_obj = doc[page_idx]
+            matches_back = page_obj.search_for("Total (Back)")
             if matches_back:
                 m_rect = matches_back[0]
-                # วางตัวเลขเยื้องจากคำว่า Total (Back) ไปทางขวา 110pt
-                page.insert_text(
+                page_obj.insert_text(
                     (m_rect.x0 + 110, m_rect.y1 - 3.5), 
-                    format_qty_str(back_locations_total), 
+                    back_display_text, 
                     fontname=FONT_NAME, 
-                    fontsize=FONT_SIZE, 
+                    fontsize=FONT_SIZE if unlisted_total_qty == 0 else 9.5, 
                     color=NAVY_BLUE,
                     morph=(fitz.Point(m_rect.x0 + 110, m_rect.y1 - 3.5), OBLIQUE_MATRIX)
                 )
 
-        # คำนวณยอดสรุปรวม
-        normal_locations_total = front_locations_total + back_locations_total
+        # คำนวณยอดสรุปรวมทั้งหมด
+        normal_locations_total = front_locations_total + final_back_total
         grand_total = normal_locations_total + total_sale_counting + adjust_qty
         count_val = grand_total
         diff_val = count_val - onhand_amount
@@ -377,6 +404,34 @@ async def process_files(
         write_table_cell("Total # Adjust", format_qty_str(adjust_qty), align_x=238, y_drop=1.0)
 
         write_table_cell("Grand Total", format_qty_str(grand_total), align_x=232, y_drop=1.0)
+
+        # 5. สร้างรายงานตารางภาษาอังกฤษ (ฟอนต์สีดำ) รองรับหลายหน้าแบบ Dynamic (Pagination)
+        if unlisted_locs:
+            def draw_table_header(page, current_page_num, total_pages_str=""):
+                page.insert_text((50, 40), "Unlisted Locations Report", fontname=FONT_NAME, fontsize=13, color=BLACK)
+                page.insert_text((50, 58), f"Total: {len(unlisted_locs)} Items | Total Qty: {unlisted_total_qty} Pcs", fontname=FONT_NAME, fontsize=10, color=BLACK)
+                page.draw_line((50, 70), (545, 70), color=BLACK, width=1)
+                page.insert_text((60, 85), "No.", fontname=FONT_NAME, fontsize=10, color=BLACK)
+                page.insert_text((120, 85), "Location Code", fontname=FONT_NAME, fontsize=10, color=BLACK)
+                page.insert_text((420, 85), "Qty", fontname=FONT_NAME, fontsize=10, color=BLACK)
+                page.draw_line((50, 92), (545, 92), color=BLACK, width=0.8)
+
+            current_page = doc.new_page(pno=-1)
+            draw_table_header(current_page, 1)
+            
+            y_pos = 110
+            for idx, (loc_code, qty_val) in enumerate(unlisted_locs, 1):
+                # หาก y_pos เกิน 750pt ให้ขึ้นหน้าใหม่และสร้างหัวตารางใหม่
+                if y_pos > 750:
+                    current_page = doc.new_page(pno=-1)
+                    draw_table_header(current_page, idx)
+                    y_pos = 110
+
+                current_page.insert_text((65, y_pos), str(idx), fontname=FONT_NAME, fontsize=10, color=BLACK)
+                current_page.insert_text((120, y_pos), loc_code, fontname=FONT_NAME, fontsize=10, color=BLACK)
+                current_page.insert_text((435, y_pos), str(qty_val), fontname=FONT_NAME, fontsize=10, color=BLACK)
+                current_page.draw_line((50, y_pos + 6), (545, y_pos + 6), color=(0.8, 0.8, 0.8), width=0.5)
+                y_pos += 22
 
         doc.save(output_pdf_path)
         doc.close()
